@@ -33,15 +33,38 @@ Keiraku is that shared answer.
 A **hub**, not a mesh. Vessels attach to a source; they do not address each other directly. Two
 vessels are connected by both being attached, not by knowing about each other.
 
+```mermaid
+flowchart TB
+    subgraph SOURCE["◆ SOURCE — a plain directory"]
+        direction LR
+        P["presence/<br/>who is alive"]
+        T["stream/<br/>addressed delivery"]
+        S["state/<br/>shared condition · v2"]
+    end
+
+    V1["vessel<br/>Claude Code<br/>· hook binding ·"]
+    V2["vessel<br/>Codex CLI<br/>· hook binding ·"]
+    V3["vessel<br/>local model runner<br/>· library call ·"]
+
+    V1 <--> SOURCE
+    V2 <--> SOURCE
+    V3 <--> SOURCE
+
+    V1 -.->|"no direct link"| V2
+    V2 -.-> V3
+
+    classDef src fill:#2a2340,stroke:#7c6bbd,stroke-width:2px,color:#ece9f5
+    classDef ves fill:#1c1828,stroke:#4a4260,color:#ece9f5
+    classDef part fill:#221d31,stroke:#4a4260,color:#a59cc4
+    class SOURCE src
+    class V1,V2,V3 ves
+    class P,T,S part
+    linkStyle 3,4 stroke:#5c3030,stroke-width:1px,color:#a08080
 ```
-        ┌──────────── SOURCE ────────────┐
-        │  presence/   stream/   state/  │
-        └────▲──────────▲──────────▲─────┘
-             │          │          │
-        ┌────┴───┐ ┌────┴───┐ ┌────┴───┐
-        │ vessel │ │ vessel │ │ vessel │
-        └────────┘ └────────┘ └────────┘
-```
+
+The dotted lines are what does **not** exist. Vessels never address each other directly — they are
+connected by both being attached to the same source. That removes peer routing, mesh
+reconciliation, and inter-node addressing from the design entirely.
 
 The source is a plain directory. No daemon, no server, no port. That is deliberate: a file-backed
 source is the only kind that two processes on opposite sides of a container, VM, or WSL boundary can

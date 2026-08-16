@@ -162,6 +162,23 @@ Delivery is exactly-once per recipient, enforced by exclusive file creation:
 
 `_read/` is never pruned automatically. Retention is the operator's decision, not the library's.
 
+### 4.5 Portability: replace is not contention-safe on Windows
+
+Records are written to a temporary file and then moved into place, so a reader never observes a
+half-written record. On POSIX, `rename(2)` is atomic and always succeeds.
+
+**On Windows it is not contention-safe.** `MoveFileEx` fails with `ERROR_ACCESS_DENIED`
+(`WinError 5`) when another thread or process is replacing the same destination at that moment. The
+operation is still atomic *when it succeeds* — it simply has to be retried.
+
+Implementations MUST retry the replace with a short backoff. Without it, two vessels heartbeating
+the same record — or a vessel and a CLI reading it — will intermittently raise on Windows.
+
+> Found by a barrier-synchronised test: two of eight threads died on this call, leaving the barrier
+> permanently short. Worth recording that a *hand-written repro of the same hypothesis had reported
+> no errors* — it was too lightweight to generate the collision. A concurrency repro that passes has
+> not proved absence; it may only have failed to collide.
+
 ---
 
 ## 5. Client API (L0)
@@ -213,8 +230,10 @@ An implementation is conformant if it:
 1. Refuses to attach to a directory without `keiraku.json`
 2. Derives `vessel_id` per §2 and never routes on `alias`
 3. Claims via exclusive create per §4.3, verified by a barrier-synchronised contention test
-4. Never deletes another vessel's presence file
-5. Preserves `provenance` through to whatever consumes the message
+4. Retries the replace per §4.5 (required on Windows, harmless elsewhere)
+5. Never deletes another vessel's presence file
+6. Preserves `provenance` through to whatever consumes the message
+7. Tolerates a corrupt or unreadable record without failing the whole read
 
 ---
 

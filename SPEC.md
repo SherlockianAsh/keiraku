@@ -313,6 +313,21 @@ a specific host exists.
 
 ---
 
+## 8. MCP (optional)
+
+A source MAY be exposed as an MCP server, letting agents that have no hook surface attach without a
+binding. This is OPTIONAL: it is a second door onto the same source, never a replacement for the
+on-disk contract, and an MCP-attached vessel is an ordinary vessel with `host` = `mcp`.
+
+- Transport is newline-delimited JSON-RPC 2.0 over stdio.
+- Identity is derived from the client name declared in `initialize` plus the server process, since
+  an MCP client has no session id of its own. One connection is one vessel.
+- Tool output that renders peer messages MUST carry the provenance warning of §4.1. This obligation
+  is stronger here than for hooks: an MCP client places tool output directly into the model's
+  context, where an unmarked peer message is indistinguishable from something the user said.
+- A server SHOULD agree with the client's offered `protocolVersion` rather than insisting on its
+  own. Disagreeing over a version string is the most common way a working server appears broken.
+
 ## 7. Conformance
 
 An implementation is conformant if it:
@@ -327,12 +342,13 @@ An implementation is conformant if it:
 8. Implements compare-and-set via the version token in §4A.2, verified under barrier-synchronised
    contention, and never lets a state key escape `state/`
 9. Verifies the caller's token before releasing or renewing a lease (§4A.3)
+10. If it exposes MCP (§8), carries the §4.1 provenance warning into tool output
 
 ---
 
 ## Open questions
 
-- Should the source be exposable as an MCP server, so MCP-speaking agents attach without a binding?
+
 - Is `stale_after` per-source configuration, or per-vessel declaration? A vessel that knows it wakes
   hourly should arguably be allowed to say so.
 - `state/` is last-writer-wins with compare-and-set as the opt-in safe path. Whether a CRDT shape is

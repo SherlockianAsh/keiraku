@@ -130,6 +130,12 @@ It reads the host's event JSON on stdin, writes peer messages to stdout, and **a
 link must never break its host. Per-host wiring lives in [`bindings/`](bindings/); adding a new host
 is documented in [BINDINGS.md](BINDINGS.md).
 
+Or expose the source over **MCP**, and any MCP-speaking agent attaches with no binding at all:
+
+```bash
+python -m keiraku.mcp --source ~/.keiraku
+```
+
 See who is attached:
 
 ```bash
@@ -146,6 +152,9 @@ Every agent host falls into one of three classes:
 | **2** | You control the agent loop | A direct library call inside your loop. |
 | **3** | Closed surface | ❌ Not possible. No attachment point exists. |
 
+A host with no hooks at all still attaches if it speaks **MCP** — see [`bindings/mcp/`](bindings/mcp/).
+That door needs no binding written for it, which is what keeps class 3 genuinely small.
+
 ### Known hosts
 
 | Host | Class | Surface |
@@ -155,7 +164,8 @@ Every agent host falls into one of three classes:
 | Grok Build | 1 | `~/.grok/hooks/*.json` |
 | Hermes Agent | 1 | `~/.hermes/config.yaml` shell hooks, or Python plugins |
 | Ollama / custom loops | 2 | direct library call |
-| Hosted chat UIs | 3 | unreachable |
+| Any MCP-speaking agent | 1* | MCP server, no binding needed |
+| Hosted chat UIs without MCP | 3 | unreachable |
 
 Class 3 is stated plainly rather than papered over. Some things genuinely cannot be attached to, and
 a tool that pretends otherwise wastes your afternoon.
@@ -195,7 +205,7 @@ which is what makes "attach anywhere" a realistic goal rather than a marketing l
 - [x] **L1** — universal hook entrypoint, host field mappings, always-on loop example
 - [ ] Verification of each binding against a live host on each platform
 - [x] **L4** — shared state, compare-and-set, and leases
-- [ ] Optionally expose a source as an MCP server, so MCP-speaking agents attach with no binding
+- [x] MCP server, so MCP-speaking agents attach with no binding
 
 ## Tests
 

@@ -20,18 +20,13 @@ def cmd_init(args) -> int:
 
 
 def cmd_who(args) -> int:
+    # Read without attaching. Looking at the list must not add you to it.
     try:
-        vessel = core.attach(
-            args.source,
-            host="cli",
-            session_id=f"cli-{os.getpid()}",
-            cwd=os.getcwd(),
-        )
+        peers = core.read_presence(args.source, include_stale=args.all)
     except core.NotASource as exc:
         print(exc, file=sys.stderr)
         return 1
 
-    peers = vessel.read_presence(include_self=False, include_stale=args.all)
     if not peers:
         print("no live vessels")
         return 0
@@ -39,7 +34,8 @@ def cmd_who(args) -> int:
     width = max(len(p["vessel_id"]) for p in peers)
     for p in peers:
         alias = f" ({p['alias']})" if p.get("alias") else ""
-        note = f"  — {p['note']}" if p.get("note") else ""
+        # ASCII only: Windows consoles default to cp1252 and mangle anything else.
+        note = f"  - {p['note']}" if p.get("note") else ""
         print(f"{p['vessel_id']:<{width}}  {p.get('status','?'):<7}  {p.get('cwd','')}{alias}{note}")
     return 0
 

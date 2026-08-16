@@ -12,6 +12,7 @@ from .core import (
     derive_vessel_id,
     init_source,
     new_msg_id,
+    read_presence,
     try_claim,
 )
 
@@ -21,6 +22,7 @@ __all__ = [
     "attach",
     "init_source",
     "derive_vessel_id",
+    "read_presence",
     "new_msg_id",
     "try_claim",
     "Vessel",

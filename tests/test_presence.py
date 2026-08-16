@@ -70,6 +70,37 @@ def test_detach_marks_stopped_but_never_deletes(source):
     assert json.loads(f.read_text())["status"] == "stopped"
 
 
+def test_read_presence_without_attaching_leaves_no_trace(source):
+    """Observing who is alive must not make the observer alive.
+
+    Caught by a smoke test: `keiraku who` attached in order to read, so every
+    glance at the list left a vessel behind in it.
+    """
+    keiraku.attach(source, host="python", session_id="a", cwd="/p")
+
+    seen = keiraku.read_presence(source)
+    assert len(seen) == 1
+
+    # Looking again must still show exactly one vessel, not two.
+    assert len(keiraku.read_presence(source)) == 1
+    assert len(list((source / "presence").glob("*.json"))) == 1
+
+
+def test_module_read_presence_can_exclude_a_vessel(source):
+    a = keiraku.attach(source, host="python", session_id="a", cwd="/p")
+    keiraku.attach(source, host="codex", session_id="b", cwd="/p")
+
+    assert len(keiraku.read_presence(source)) == 2
+    assert len(keiraku.read_presence(source, exclude=a.vessel_id)) == 1
+
+
+def test_module_read_presence_refuses_a_non_source(empty_dir):
+    import pytest
+
+    with pytest.raises(keiraku.NotASource):
+        keiraku.read_presence(empty_dir)
+
+
 def test_a_corrupt_presence_file_does_not_break_the_read(source):
     """One bad record must not blind a vessel to every other vessel."""
     a = keiraku.attach(source, host="python", session_id="a", cwd="/p")

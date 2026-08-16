@@ -168,6 +168,37 @@ def init_source(path) -> Path:
     return root
 
 
+def read_presence(
+    source,
+    exclude=None,
+    include_stale: bool = False,
+    stale_after: float = DEFAULT_STALE_AFTER,
+) -> list:
+    """Read presence WITHOUT attaching.
+
+    Observing who is alive must not make the observer alive. A monitor, a
+    status bar, or a `who` command should be able to look without joining --
+    otherwise every glance leaves a vessel behind in the list.
+    """
+    root = _require_source(source)
+    out = []
+    cutoff = time.time() - stale_after
+    pdir = root / "presence"
+    if not pdir.is_dir():
+        return out
+
+    for f in sorted(pdir.glob("*.json")):
+        rec = _read_json(f)
+        if not rec or "vessel_id" not in rec:
+            continue
+        if exclude and rec["vessel_id"] == exclude:
+            continue
+        if not include_stale and _parse(rec.get("heartbeat_at", "")) < cutoff:
+            continue
+        out.append(rec)
+    return out
+
+
 def _require_source(path) -> Path:
     root = Path(path)
     if not (root / "keiraku.json").is_file():
@@ -237,22 +268,12 @@ class Vessel:
 
     def read_presence(self, include_self: bool = False, include_stale: bool = False):
         """Live vessels. Self and stale records excluded by default."""
-        out = []
-        cutoff = time.time() - self.stale_after
-        pdir = self.source / "presence"
-        if not pdir.is_dir():
-            return out
-
-        for f in sorted(pdir.glob("*.json")):
-            rec = _read_json(f)
-            if not rec or "vessel_id" not in rec:
-                continue
-            if not include_self and rec["vessel_id"] == self.vessel_id:
-                continue
-            if not include_stale and _parse(rec.get("heartbeat_at", "")) < cutoff:
-                continue
-            out.append(rec)
-        return out
+        return read_presence(
+            self.source,
+            exclude=None if include_self else self.vessel_id,
+            include_stale=include_stale,
+            stale_after=self.stale_after,
+        )
 
     def detach(self, status: str = "stopped") -> None:
         """Mark this vessel stopped. The record is never deleted — a link that

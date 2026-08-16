@@ -8,9 +8,11 @@ of state.
 
 Write the attachment once. Attach it everywhere.
 
-> ⚠️ **Status: pre-alpha. Design stage — there is no working implementation yet.**
-> This repository currently contains the specification and roadmap. Nothing here runs. If you found
-> this looking for a working tool, come back later or watch the repo.
+> **Status: alpha.** The core works and is tested — presence, addressed delivery, atomic claiming,
+> and a universal hook entrypoint. What is *not* yet proven is the host bindings against live hosts:
+> the wiring is documented and the entrypoint is tested, but each binding's "does this host actually
+> fire this event on your platform" question is yours to verify. Each binding README says what was
+> verified and what was not.
 
 ---
 
@@ -74,14 +76,56 @@ both read without anything running in between.
 
 | Layer | What it does | Status |
 |-------|--------------|--------|
-| **L0** Protocol + client | `attach` · `heartbeat` · `publish` · `read` | 🔨 spec written |
-| **L1** Bindings | Per-host adapters — hooks, or a direct library call | ⬜ planned |
-| **L2** Presence | Who is alive, where, doing what | ⬜ planned |
-| **L3** Stream | Addressed delivery between vessels | ⬜ planned |
+| **L0** Protocol + client | `attach` · `heartbeat` · `publish` · `read` | ✅ implemented |
+| **L1** Bindings | Per-host field mappings — hooks, or a direct library call | ✅ entrypoint tested, host wiring unverified |
+| **L2** Presence | Who is alive, where, doing what | ✅ implemented |
+| **L3** Stream | Addressed, exactly-once delivery between vessels | ✅ implemented |
 | **L4** State | Shared condition + locks | ⬜ v2 |
 
 **L0 is deliberately not hooks.** Hooks are one binding among several. If hooks were the foundation,
 only hook-bearing hosts could ever attach — which would exclude every local-model runner.
+
+## Quickstart
+
+No dependencies. Python 3.9+.
+
+```bash
+git clone https://github.com/SherlockianAsh/keiraku
+cd keiraku
+python -m keiraku --source ~/.keiraku init
+```
+
+Use it directly from any agent loop you control:
+
+```python
+import keiraku
+
+v = keiraku.attach("~/.keiraku", host="python",
+                   session_id="worker-1", cwd="/srv/app", alias="worker")
+
+v.heartbeat(status="busy", note="reindexing")     # I am alive, and this is what I am doing
+print(v.read_presence())                          # who else is alive
+v.publish(to="*", body="index rebuilt")           # tell them
+for msg in v.read_stream():                       # what did they tell me
+    print(msg["from"], msg["body"])
+v.detach()
+```
+
+Or attach a CLI agent with no code at all, via the universal hook entrypoint:
+
+```bash
+python -m keiraku.hook --host claude-code --source ~/.keiraku
+```
+
+It reads the host's event JSON on stdin, writes peer messages to stdout, and **always exits 0** — a
+link must never break its host. Per-host wiring lives in [`bindings/`](bindings/); adding a new host
+is documented in [BINDINGS.md](BINDINGS.md).
+
+See who is attached:
+
+```bash
+python -m keiraku --source ~/.keiraku who
+```
 
 ## Attachment classes
 
@@ -136,11 +180,32 @@ which is what makes "attach anywhere" a realistic goal rather than a marketing l
 
 ## Roadmap
 
-1. **L0** — protocol, client library, contention and staleness tests
-2. **L2** — presence and derived addressing
-3. **L1** — bindings, starting with Claude Code, then Codex, Grok Build, Hermes Agent, Python
-4. **L3** — addressed delivery, including a poll loop for always-on vessels
-5. **L4** *(v2)* — shared state and locks
+- [x] **L0** — protocol, client library, contention and staleness tests
+- [x] **L2** — presence and derived addressing
+- [x] **L3** — addressed, exactly-once delivery
+- [x] **L1** — universal hook entrypoint, host field mappings, always-on loop example
+- [ ] Verification of each binding against a live host on each platform
+- [ ] **L4** *(v2)* — shared state and locks
+- [ ] Optionally expose a source as an MCP server, so MCP-speaking agents attach with no binding
+
+## Tests
+
+```bash
+python -m pytest
+```
+
+The two tests worth reading are in `tests/test_stream.py`. Both encode failures that actually
+happened rather than hypothetical ones:
+
+- **`test_claim_is_atomic_under_true_contention`** — 16 threads released by a `threading.Barrier`
+  race for one message; exactly one may win. An earlier prototype claimed by *renaming* and passed a
+  concurrency test with one winner. That test was lying: each worker computed its own start delay,
+  so the workers never collided. Under real simultaneity the same code produced four winners.
+- **`test_concurrent_readers_split_messages_without_duplication`** — eight readers drain forty
+  messages; each must be delivered exactly once. Writing this test is what exposed that `os.replace`
+  is atomic on POSIX but **not contention-safe on Windows** (see [SPEC §4.5](SPEC.md)).
+
+Both fail rather than hang if a worker dies. A hanging test tells you nothing.
 
 ## Name
 
@@ -154,5 +219,13 @@ MIT — see [LICENSE](LICENSE).
 
 ## Contributing
 
-Not yet — there is nothing to contribute to. When L0 lands, the most useful contribution will be a
-binding for a host that isn't listed above. `BINDINGS.md` will document the shape.
+The most useful contribution is a **binding for a host that isn't listed above** — and it is
+smaller than it sounds. A binding is a field mapping, not a program: one entry in the `HOSTS` dict,
+a short README, and a test case. See [BINDINGS.md](BINDINGS.md).
+
+Two things are asked of any contribution:
+
+- **Say what you verified and what you didn't.** "I tested this on Linux, not on Windows" is a
+  useful sentence. Silence about it is not.
+- **Concurrency changes need a barrier-synchronised test.** A concurrency test that passes has not
+  proved absence — it may only have failed to collide.

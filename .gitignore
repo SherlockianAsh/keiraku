@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local test sources — a Keiraku source is a directory of live vessel state.
+# Never commit one: presence records carry cwd, hostnames, and model names.
+.keiraku/
+keiraku-source/
+**/presence/
+**/stream/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Env
+.env
+.env.*

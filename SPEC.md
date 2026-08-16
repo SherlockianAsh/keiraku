@@ -1,7 +1,7 @@
 # Keiraku — On-Disk Specification
 
-**Version**: 0.1.0-draft
-**Status**: draft — not yet implemented
+**Version**: 0.1.0
+**Status**: implemented — the reference client in this repository conforms
 
 This document defines the contract. It is written before the code deliberately: the on-disk format
 *is* the interface between vessels, and vessels may be written in different languages by different
@@ -23,7 +23,9 @@ A **source** is a plain directory. It has no server, no daemon, and no listening
 │       ├── <msg-id>.json
 │       ├── <msg-id>.claim
 │       └── _read/
-└── state/                # reserved — v2         (L4)
+└── state/                # shared state + leases (L4)
+    ├── <slug>.<hash8>.json
+    └── _cas/              # version tokens
 ```
 
 Any process that can read and write this directory can participate. That includes processes on
@@ -162,7 +164,7 @@ Delivery is exactly-once per recipient, enforced by exclusive file creation:
 
 `_read/` is never pruned automatically. Retention is the operator's decision, not the library's.
 
-### 4.5 Portability: replace is not contention-safe on Windows
+### 4.5 Portability: the replace pattern is not contention-safe on Windows
 
 Records are written to a temporary file and then moved into place, so a reader never observes a
 half-written record. On POSIX, `rename(2)` is atomic and always succeeds.
@@ -179,7 +181,81 @@ the same record — or a vessel and a CLI reading it — will intermittently rai
 > no errors* — it was too lightweight to generate the collision. A concurrency repro that passes has
 > not proved absence; it may only have failed to collide.
 
+**The reader must retry too, and this half is the dangerous one.** On Windows, *opening* a file
+while another process replaces it also raises `PermissionError`. An implementation that treats every
+`OSError` as "no such record" will transiently report an **existing** key as absent — and a caller
+that believes it will recreate the key, destroying another vessel's value. Silent, intermittent, and
+invisible in single-threaded testing.
+
+Readers MUST therefore distinguish three outcomes rather than two:
+
+| Condition | Correct behaviour |
+|-----------|-------------------|
+| File does not exist (`FileNotFoundError`) | Return "absent" immediately |
+| File is locked (`PermissionError`) | **Retry** — it is mid-replace, not gone |
+| File is unparseable | Return "absent"; one corrupt record must not blind the whole read |
+
 ---
+
+## 4A. Shared state and leases (L4)
+
+State is the answer to "what is true right now", as opposed to presence ("who is here") and stream
+("what was said"). It lives in `state/`.
+
+### 4A.1 Record
+
+One file per key, at `state/<slug>.<hash8>.json`:
+
+```json
+{
+  "key": "build",
+  "value": { "status": "green", "tests": 94 },
+  "version": 7,
+  "updated_by": "codex-1a2b3c4d",
+  "updated_at": "2026-08-16T14:41:02.113Z"
+}
+```
+
+The filename carries **both** a slug and a hash of the key. A slug alone would let `a/b` and `a_b`
+share a file; a hash alone would make `ls state/` unreadable, breaking the commitment that a source
+is inspectable with ordinary tools. Keys are arbitrary strings; the slug is what makes them safe as
+filenames, and implementations MUST ensure a key can never escape `state/`.
+
+### 4A.2 Compare-and-set
+
+`set` is last-writer-wins. Writers that cannot tolerate a lost update use compare-and-set, which
+introduces **no new primitive**:
+
+> To move a key from version *N* to *N+1*, a writer must exclusively create the token
+> `state/_cas/<slug>.<hash8>.<N+1>`. Only one writer can. The winner then writes the record.
+
+This is the same exclusive-create used for message claiming (§4.3). There is no lock involved, no
+deletion, and no expiry.
+
+The intended usage is read-modify-CAS-retry:
+
+```python
+while True:
+    cur = vessel.get_state("n")
+    if vessel.cas_state("n", cur["value"] + 1, cur["version"]):
+        break
+```
+
+### 4A.3 Leases
+
+**A lock is not a separate mechanism.** It is a state key `_lock:<name>` whose value is
+`{owner, token, acquired_at, expires_at}`, acquired by CAS. Because CAS is exclusive-create
+underneath, exactly one vessel wins — including the case several vessels notice the same dead holder
+simultaneously and all attempt takeover at once.
+
+- **Acquire** succeeds if the key is unset, or held with `expires_at` in the past.
+- **Release** and **renew** MUST verify the caller's token. Refusing a mismatched token is the whole
+  point: otherwise one worker's cleanup silently unlocks another worker's critical section.
+- **Leases expire.** A vessel can die holding one, and nothing in Keiraku may delete another
+  vessel's record to rescue it — so expiry is the only safe recovery, exactly as with presence
+  staleness (§3.1).
+
+Locks are advisory. Nothing enforces that a vessel holds one before writing.
 
 ## 5. Client API (L0)
 
@@ -202,6 +278,20 @@ vessel.read_stream() -> [Message]
 
 vessel.detach(status="stopped")
   Marks the vessel stopped. Does NOT delete the presence file.
+
+vessel.set_state(key, value)                       # last writer wins
+vessel.get_state(key) -> record | None
+vessel.list_state() -> [record]
+vessel.cas_state(key, value, expected_version) -> bool
+
+vessel.acquire_lock(name, ttl=60.0) -> token | None
+vessel.renew_lock(name, token, ttl=60.0) -> bool
+vessel.release_lock(name, token) -> bool
+with vessel.lock(name):                            # raises LockUnavailable
+    ...
+
+read_state(source, key)                            # read without attaching
+list_state(source)
 ```
 
 All operations MUST be safe to call concurrently from multiple processes.
@@ -230,10 +320,13 @@ An implementation is conformant if it:
 1. Refuses to attach to a directory without `keiraku.json`
 2. Derives `vessel_id` per §2 and never routes on `alias`
 3. Claims via exclusive create per §4.3, verified by a barrier-synchronised contention test
-4. Retries the replace per §4.5 (required on Windows, harmless elsewhere)
+4. Retries BOTH the replace and the read per §4.5 (required on Windows, harmless elsewhere)
 5. Never deletes another vessel's presence file
 6. Preserves `provenance` through to whatever consumes the message
 7. Tolerates a corrupt or unreadable record without failing the whole read
+8. Implements compare-and-set via the version token in §4A.2, verified under barrier-synchronised
+   contention, and never lets a state key escape `state/`
+9. Verifies the caller's token before releasing or renewing a lease (§4A.3)
 
 ---
 
@@ -242,5 +335,8 @@ An implementation is conformant if it:
 - Should the source be exposable as an MCP server, so MCP-speaking agents attach without a binding?
 - Is `stale_after` per-source configuration, or per-vessel declaration? A vessel that knows it wakes
   hourly should arguably be allowed to say so.
-- Should `state/` (v2) be last-writer-wins, or CRDT-shaped? Deferred until real usage shows which
-  conflicts actually occur.
+- `state/` is last-writer-wins with compare-and-set as the opt-in safe path. Whether a CRDT shape is
+  warranted is still open, and deliberately unanswered: it should be decided by conflicts that
+  actually occur in use, not by anticipation.
+- `state/_cas/` tokens accumulate, one per version. They are tiny and form a natural version log,
+  but nothing prunes them.

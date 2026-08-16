@@ -80,7 +80,7 @@ both read without anything running in between.
 | **L1** Bindings | Per-host field mappings — hooks, or a direct library call | ✅ entrypoint tested, host wiring unverified |
 | **L2** Presence | Who is alive, where, doing what | ✅ implemented |
 | **L3** Stream | Addressed, exactly-once delivery between vessels | ✅ implemented |
-| **L4** State | Shared condition + locks | ⬜ v2 |
+| **L4** State | Shared condition, compare-and-set, leases | ✅ implemented |
 
 **L0 is deliberately not hooks.** Hooks are one binding among several. If hooks were the foundation,
 only hook-bearing hosts could ever attach — which would exclude every local-model runner.
@@ -108,8 +108,17 @@ print(v.read_presence())                          # who else is alive
 v.publish(to="*", body="index rebuilt")           # tell them
 for msg in v.read_stream():                       # what did they tell me
     print(msg["from"], msg["body"])
+
+v.set_state("build", {"status": "green"})         # what is true right now
+with v.lock("migrations"):                        # one vessel at a time
+    ...
 v.detach()
 ```
+
+Presence answers *who is here*, stream answers *what was said*, and state answers *what is true
+right now*. State is last-writer-wins by default, with `cas_state()` for writers that cannot afford
+a lost update. A lock is not a separate mechanism — it is compare-and-set over a state key, so it
+introduces no new primitive and no second expiry clock.
 
 Or attach a CLI agent with no code at all, via the universal hook entrypoint:
 
@@ -185,7 +194,7 @@ which is what makes "attach anywhere" a realistic goal rather than a marketing l
 - [x] **L3** — addressed, exactly-once delivery
 - [x] **L1** — universal hook entrypoint, host field mappings, always-on loop example
 - [ ] Verification of each binding against a live host on each platform
-- [ ] **L4** *(v2)* — shared state and locks
+- [x] **L4** — shared state, compare-and-set, and leases
 - [ ] Optionally expose a source as an MCP server, so MCP-speaking agents attach with no binding
 
 ## Tests

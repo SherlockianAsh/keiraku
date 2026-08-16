@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +39,10 @@ class NotASource(KeirakuError):
 
 class UnknownRecipient(KeirakuError):
     """No live vessel matches the given id or alias."""
+
+
+class LockUnavailable(KeirakuError):
+    """The lock is held by another vessel and has not expired."""
 
 
 # --------------------------------------------------------------------------
@@ -105,7 +111,7 @@ def try_claim(msg_path: Path) -> bool:
     return True
 
 
-def _replace(src: Path, dst: Path, attempts: int = 12, delay: float = 0.004) -> None:
+def _replace(src: Path, dst: Path, attempts: int = 60, delay: float = 0.002) -> None:
     """os.replace, retried.
 
     POSIX rename is atomic and always succeeds. Windows MoveFileEx is not
@@ -124,7 +130,7 @@ def _replace(src: Path, dst: Path, attempts: int = 12, delay: float = 0.004) -> 
         except PermissionError:
             if attempt == attempts - 1:
                 raise
-            time.sleep(delay * (attempt + 1))
+            time.sleep(min(delay * (attempt + 1), 0.02))
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -141,15 +147,31 @@ def _write_json(path: Path, payload: dict) -> None:
         raise
 
 
-def _read_json(path: Path):
-    """Return the parsed record, or None if it is unreadable.
+def _read_json(path: Path, attempts: int = 60, delay: float = 0.002):
+    """Return the parsed record, or None if it is genuinely absent or corrupt.
 
-    One corrupt file must not blind a vessel to every other vessel.
+    The retry is not defensive padding. On Windows, opening a file while
+    another process is replacing it raises PermissionError -- so a reader that
+    treated every OSError as "absent" would transiently report an EXISTING key
+    as unset. A caller would then conclude the key had never been written and
+    recreate it, losing the other vessel's value.
+
+    So the three outcomes are kept distinct:
+      missing   -> None immediately (legitimately absent)
+      locked    -> retry; it is mid-replace, not gone
+      corrupt   -> None (one bad record must not blind the whole read)
     """
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    for attempt in range(attempts):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except PermissionError:
+            if attempt == attempts - 1:
+                return None
+            time.sleep(min(delay * (attempt + 1), 0.02))
+        except (OSError, ValueError):
+            return None
 
 
 # --------------------------------------------------------------------------
@@ -197,6 +219,86 @@ def read_presence(
             continue
         out.append(rec)
     return out
+
+
+# --------------------------------------------------------------------------
+# state (L4)
+# --------------------------------------------------------------------------
+
+_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def state_filename(key: str) -> str:
+    """Filesystem-safe, human-readable, and collision-free.
+
+    A slug alone would let 'a/b' and 'a_b' share a file; a hash alone would
+    make `ls state/` unreadable, which breaks the "inspectable with ls and cat"
+    commitment. So: slug for humans, hash for correctness.
+    """
+    slug = _SAFE.sub("_", key)[:48].strip(".") or "key"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+    return f"{slug}.{digest}.json"
+
+
+def read_state(source, key: str):
+    """Read one state key without attaching. None if unset."""
+    root = _require_source(source)
+    return _read_json(root / "state" / state_filename(key))
+
+
+def list_state(source) -> list:
+    """Every state key, without attaching."""
+    root = _require_source(source)
+    sdir = root / "state"
+    if not sdir.is_dir():
+        return []
+    out = []
+    for f in sorted(sdir.glob("*.json")):
+        rec = _read_json(f)
+        if rec and "key" in rec:
+            out.append(rec)
+    return out
+
+
+def _write_state(root: Path, key: str, value, version: int, by: str) -> dict:
+    record = {
+        "key": key,
+        "value": value,
+        "version": version,
+        "updated_by": by,
+        "updated_at": _now(),
+    }
+    sdir = root / "state"
+    sdir.mkdir(parents=True, exist_ok=True)
+    _write_json(sdir / state_filename(key), record)
+    return record
+
+
+def _cas(root: Path, key: str, value, expected_version: int, by: str) -> bool:
+    """Compare-and-set, using the one primitive this project trusts.
+
+    To move a key from version N to N+1 a writer must exclusively create the
+    token `_cas/<key>.<N+1>`. Only one writer can, so only one writer performs
+    the bump. No locks, no deletion, and no expiry are involved.
+    """
+    current = read_state(root, key)
+    have = current["version"] if current else 0
+    if have != expected_version:
+        return False
+
+    cdir = root / "state" / "_cas"
+    cdir.mkdir(parents=True, exist_ok=True)
+    token = cdir / f"{state_filename(key)[:-5]}.{expected_version + 1}"
+    try:
+        fd = os.open(token, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    os.close(fd)
+
+    _write_state(root, key, value, expected_version + 1, by)
+    return True
 
 
 def _require_source(path) -> Path:
@@ -344,6 +446,95 @@ class Vessel:
             if rec:
                 out.append(rec)
         return out
+
+
+    # -- state (L4) -------------------------------------------------------
+    def set_state(self, key: str, value) -> dict:
+        """Last writer wins. Use cas_state if that is not acceptable."""
+        current = read_state(self.source, key)
+        version = (current["version"] if current else 0) + 1
+        return _write_state(self.source, key, value, version, self.vessel_id)
+
+    def get_state(self, key: str):
+        return read_state(self.source, key)
+
+    def list_state(self) -> list:
+        return list_state(self.source)
+
+    def cas_state(self, key: str, value, expected_version: int) -> bool:
+        """Set only if the key is still at expected_version. False if it moved.
+
+        The intended pattern is read-modify-CAS-retry:
+
+            while True:
+                cur = v.get_state("n")
+                if v.cas_state("n", cur["value"] + 1, cur["version"]):
+                    break
+        """
+        return _cas(self.source, key, value, expected_version, self.vessel_id)
+
+    # -- locks (L4) -------------------------------------------------------
+    def acquire_lock(self, name: str, ttl: float = 60.0):
+        """Take a lease. Returns a token, or None if held by someone else.
+
+        A lock is a state key holding {owner, token, expires_at}, taken by CAS.
+        Because CAS is exclusive-create underneath, exactly one vessel wins --
+        including the dangerous case where several vessels notice the same dead
+        holder simultaneously and all try to take over at once.
+
+        Leases expire because a vessel can die holding one, and nothing in
+        Keiraku may delete another vessel's record to rescue it.
+        """
+        key = f"_lock:{name}"
+        current = read_state(self.source, key)
+        version = current["version"] if current else 0
+
+        if current:
+            held = current["value"] or {}
+            if held.get("expires_at", 0) > time.time():
+                return None  # genuinely held
+
+        token = uuid.uuid4().hex
+        lease = {
+            "owner": self.vessel_id,
+            "token": token,
+            "acquired_at": _now(),
+            "expires_at": time.time() + ttl,
+        }
+        return token if self.cas_state(key, lease, version) else None
+
+    def renew_lock(self, name: str, token: str, ttl: float = 60.0) -> bool:
+        """Extend a lease you hold. False if you do not hold it."""
+        key = f"_lock:{name}"
+        current = read_state(self.source, key)
+        if not current or (current["value"] or {}).get("token") != token:
+            return False
+        lease = dict(current["value"])
+        lease["expires_at"] = time.time() + ttl
+        return self.cas_state(key, lease, current["version"])
+
+    def release_lock(self, name: str, token: str) -> bool:
+        """Release a lease you hold. False if the token does not match.
+
+        Refusing a mismatched token is the point: otherwise one worker's
+        cleanup silently unlocks another worker's critical section.
+        """
+        key = f"_lock:{name}"
+        current = read_state(self.source, key)
+        if not current or (current["value"] or {}).get("token") != token:
+            return False
+        return self.cas_state(key, None, current["version"])
+
+    @contextmanager
+    def lock(self, name: str, ttl: float = 60.0):
+        """`with vessel.lock("ledger"):` -- released even if the body raises."""
+        token = self.acquire_lock(name, ttl=ttl)
+        if token is None:
+            raise LockUnavailable(f"lock {name!r} is held by another vessel")
+        try:
+            yield token
+        finally:
+            self.release_lock(name, token)
 
 
 def attach(

@@ -9,7 +9,7 @@ description = "Attach any AI agent harness to a shared memory source."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [{ name = "Ash", email = "asyrof.nasir@gmail.com" }]
+authors = [{ name = "SherlockianAsh" }]
 keywords = ["agents", "llm", "ipc", "presence", "claude-code", "codex", "hooks"]
 classifiers = [
   "License :: OSI Approved :: MIT License",

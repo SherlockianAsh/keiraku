@@ -209,7 +209,13 @@ def run(argv=None, stdin_text=None, env=None) -> tuple:
 def main(argv=None) -> int:  # pragma: no cover - thin wrapper
     code, out = run(argv)
     if out:
-        sys.stdout.write(out + "\n")
+        # Hosts read hook stdout as UTF-8. Writing through sys.stdout would use
+        # the console codepage (cp1252 on Windows): a peer's em dash arrives as
+        # U+FFFD, and Arabic or Japanese raises after read_stream() has already
+        # claimed the message, so it is lost. Write the bytes ourselves.
+        sys.stdout.flush()
+        sys.stdout.buffer.write((out + "\n").encode("utf-8"))
+        sys.stdout.buffer.flush()
     return code
 
 

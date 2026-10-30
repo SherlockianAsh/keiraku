@@ -4,6 +4,7 @@ A binding is a field mapping, not a program. These tests hold that line.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -197,3 +198,28 @@ def test_render_includes_sender_and_body():
     assert "codex-1234abcd" in out
     assert "line one" in out
     assert "line two" in out
+
+
+def test_main_writes_utf8_whatever_the_console_codepage(source):
+    """Hosts read hook stdout as UTF-8. On Windows Python's stdout defaults to
+    cp1252, so a peer's em dash left as byte 0x97 and arrived as U+FFFD."""
+    import os
+    import subprocess
+    import sys
+
+    a = keiraku.attach(source, host="python", session_id="a", cwd="/p")
+    _run(source, "claude-code", {"session_id": "s1", "cwd": "/p", "hook_event_name": "SessionStart"})
+    vid = keiraku.derive_vessel_id("claude-code", "s1", "/p")
+    a.publish(to=vid, body="Hello Mei \u2014 Beatrice here. \u0645\u064a \u30e1\u30a4")
+
+    env = dict(os.environ, PYTHONIOENCODING="cp1252", PYTHONUTF8="0")
+    proc = subprocess.run(
+        [sys.executable, "-m", "keiraku.hook", "--host", "claude-code", "--source", str(source)],
+        input=json.dumps({"session_id": "s1", "cwd": "/p",
+                          "hook_event_name": "UserPromptSubmit"}).encode("utf-8"),
+        capture_output=True, env=env, cwd=str(Path(keiraku.__file__).parents[1]),
+    )
+    assert proc.returncode == 0, proc.stderr
+    text = proc.stdout.decode("utf-8")  # raises if the bytes are not UTF-8
+    assert "Hello Mei \u2014 Beatrice here." in text
+    assert "\u0645\u064a \u30e1\u30a4" in text

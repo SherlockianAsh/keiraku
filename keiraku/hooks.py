@@ -39,19 +39,22 @@ HOSTS = {
         "fields": _COMMON,
         "env": {"session_id": "CLAUDE_SESSION_ID"},
         "start": {"SessionStart"},
-        "end": {"SessionEnd", "Stop"},
+        "end": {"SessionEnd"},
+        "idle": {"Stop"},
     },
     "codex": {
         "fields": _COMMON,
         "env": {},
         "start": {"SessionStart"},
-        "end": {"SessionEnd", "Stop"},
+        "end": {"SessionEnd"},
+        "idle": {"Stop"},
     },
     "grok-build": {
         "fields": _COMMON,
         "env": {"session_id": "GROK_SESSION_ID", "event": "GROK_HOOK_EVENT"},
         "start": {"SessionStart"},
-        "end": {"SessionEnd", "Stop"},
+        "end": {"SessionEnd"},
+        "idle": {"Stop"},
     },
     "hermes-agent": {
         "fields": _COMMON,
@@ -108,10 +111,16 @@ def normalize(host: str, payload: dict, env=None) -> dict:
 
 
 def classify(host: str, event: str) -> str:
-    """start | end | turn — anything unrecognised is a turn."""
+    """start | idle | end | turn — anything unrecognised is a turn.
+
+    idle is the end of a reply (Stop), not of the session: the vessel stays
+    reachable and nothing is read, since a host does not inject Stop output.
+    """
     spec = HOSTS[host]
     if event in spec["start"]:
         return "start"
+    if event in spec.get("idle", ()):
+        return "idle"
     if event in spec["end"]:
         return "end"
     return "turn"
@@ -196,7 +205,7 @@ def run(argv=None, stdin_text=None, env=None) -> tuple:
     if kind == "end":
         vessel.detach()
         return 0, ""
-    if kind == "start":
+    if kind in ("start", "idle"):
         vessel.heartbeat(status="idle")
         return 0, ""
 

@@ -223,3 +223,20 @@ def test_main_writes_utf8_whatever_the_console_codepage(source):
     text = proc.stdout.decode("utf-8")  # raises if the bytes are not UTF-8
     assert "Hello Mei \u2014 Beatrice here." in text
     assert "\u0645\u064a \u30e1\u30a4" in text
+
+
+@pytest.mark.parametrize("host", ["claude-code", "codex", "grok-build"])
+def test_stop_ends_a_turn_not_the_session(source, host):
+    """Stop fires after every reply. Treating it as the end of the session
+    marked a live vessel stopped between turns, so nobody could message it."""
+    _run(source, host, {"session_id": "s1", "cwd": "/p", "hook_event_name": "SessionStart"}, extra=["--alias", "bea"])
+    _run(source, host, {"session_id": "s1", "cwd": "/p", "hook_event_name": "UserPromptSubmit"}, extra=["--alias", "bea"])
+    code, out = _run(source, host, {"session_id": "s1", "cwd": "/p", "hook_event_name": "Stop"}, extra=["--alias", "bea"])
+    assert code == 0 and out == ""
+
+    vid = keiraku.derive_vessel_id(host, "s1", "/p")
+    rec = json.loads((source / "presence" / f"{vid}.json").read_text())
+    assert rec["status"] == "idle"
+
+    sender = keiraku.attach(source, host="python", session_id="x", cwd="/p")
+    sender.publish(to="bea", body="still reachable")  # raises UnknownRecipient if stopped

@@ -149,6 +149,24 @@ def test_send_refuses_an_ambiguous_alias_and_lists_the_ids(source):
     assert _inbox(source, b.vessel_id) == [] and _inbox(source, c.vessel_id) == []
 
 
+def test_one_session_seen_from_two_folders_is_not_ambiguous(source):
+    """The vessel id hashes the folder, so a session that changed folder has two
+    records (12 Nov 2026: the Meian session after a `cd`). Same host + same
+    session id is one session: send goes to the freshest record."""
+    a, b = _two(source)
+    old = core.attach(source, host="claude-code", session_id="s-x", cwd="D:\\w", alias="moved")
+    _age(source, old.vessel_id, 600)
+    new = core.attach(source, host="claude-code", session_id="s-x", cwd="D:\\w\\sub", alias="moved")
+    assert old.vessel_id != new.vessel_id
+    r = _run_cli("--source", str(source), "send", "--from", "mei", "--to", "moved", "x")
+    assert r.returncode == 0, r.stderr.decode()
+    assert len(_inbox(source, new.vessel_id)) == 1 and _inbox(source, old.vessel_id) == []
+    r = _run_cli("--source", str(source), "send", "--from", "moved", "--to", "mei", "y")
+    assert r.returncode == 0, r.stderr.decode()
+    msg = json.loads(_inbox(source, b.vessel_id)[0].read_text(encoding="utf-8"))
+    assert msg["from"] == new.vessel_id
+
+
 def test_send_refuses_an_unknown_sender_and_self(source):
     a, b = _two(source)
     r = _run_cli("--source", str(source), "send", "--from", "nobody", "--to", "mei", "x")

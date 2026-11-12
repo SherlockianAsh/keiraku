@@ -68,6 +68,15 @@ def _one(records, ref: str, role: str):
     open_ = [r for r in found if r.get("status") != "stopped"]
     if not open_:
         return None, f"{role}: {ref!r} has ended (status stopped)"
+    # One session that changed folder leaves a record per folder (the vessel id
+    # hashes the folder). Same host + same session id is one session: keep its
+    # freshest record. Different sessions sharing a name stay ambiguous.
+    newest = {}
+    for r in open_:
+        key = (r.get("host"), r.get("session_id"))
+        if key not in newest or core._parse(r.get("heartbeat_at", "")) > core._parse(newest[key].get("heartbeat_at", "")):
+            newest[key] = r
+    open_ = list(newest.values())
     if len(open_) > 1:
         lines = [f"{role}: {ref!r} is ambiguous; use one of these vessel ids:"]
         for r in open_:

@@ -401,25 +401,8 @@ class Vessel:
     def publish(self, to: str, body: str, summary=None) -> list:
         """Write one copy per recipient. There is no shared broadcast inbox —
         a shared inbox is exactly how delivery-by-race happens."""
-        sent = []
-        for vid in self._resolve(to):
-            msg_id = new_msg_id()
-            inbox = self._inbox(vid)
-            inbox.mkdir(parents=True, exist_ok=True)
-            _write_json(
-                inbox / f"{msg_id}.json",
-                {
-                    "msg_id": msg_id,
-                    "from": self.vessel_id,
-                    "to": vid,
-                    "summary": summary,
-                    "body": body,
-                    "created_at": _now(),
-                    "provenance": PROVENANCE_PEER,
-                },
-            )
-            sent.append(msg_id)
-        return sent
+        return [deliver(self.source, self.vessel_id, vid, body, summary)
+                for vid in self._resolve(to)]
 
     def read_stream(self) -> list:
         """Claim and return unread messages, oldest first."""
@@ -535,6 +518,31 @@ class Vessel:
             yield token
         finally:
             self.release_lock(name, token)
+
+
+def deliver(source, from_id: str, to_id: str, body: str, summary=None) -> str:
+    """Write one message into one vessel's inbox. Returns its msg_id.
+
+    Resolution (who `to_id` is, whether it is alive) is the caller's job; this
+    only writes, in the one shape every reader expects.
+    """
+    root = Path(source)
+    msg_id = new_msg_id()
+    inbox = root / "stream" / to_id
+    inbox.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        inbox / f"{msg_id}.json",
+        {
+            "msg_id": msg_id,
+            "from": from_id,
+            "to": to_id,
+            "summary": summary,
+            "body": body,
+            "created_at": _now(),
+            "provenance": PROVENANCE_PEER,
+        },
+    )
+    return msg_id
 
 
 def attach(

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 from . import core
 
@@ -126,6 +127,28 @@ def classify(host: str, event: str) -> str:
     return "turn"
 
 
+def claude_session_name(session_id: str, sessions_dir) -> "str | None":
+    """The name Claude Code shows for a session, from its own registry.
+
+    Claude Code writes one JSON file per live session (`~/.claude/sessions/
+    <pid>.json`) carrying `sessionId` and `name`. Using that name as the alias
+    lets peers tell sessions in the same folder apart without any per-session
+    setup: a hash alone let a reply land on the wrong session (12 Nov 2026).
+    Anything unreadable is skipped; no match is None, never a guess.
+    """
+    d = Path(sessions_dir)
+    if not d.is_dir():
+        return None
+    for f in d.glob("*.json"):
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("sessionId") == session_id and rec.get("name"):
+            return str(rec["name"])
+    return None
+
+
 def render_messages(messages) -> str:
     """Render peer messages for injection into an agent's context.
 
@@ -187,13 +210,19 @@ def run(argv=None, stdin_text=None, env=None) -> tuple:
         # A hook must never break its host. Report and exit clean.
         return 0, f"[keiraku] skipped: {exc}"
 
+    alias = args.alias
+    if not alias and ident["host"] == "claude-code":
+        sessions_dir = env.get("KEIRAKU_CLAUDE_SESSIONS") or os.path.join(
+            os.path.expanduser("~"), ".claude", "sessions")
+        alias = claude_session_name(ident["session_id"], sessions_dir)
+
     try:
         vessel = core.attach(
             source,
             host=ident["host"],
             session_id=ident["session_id"],
             cwd=ident["cwd"],
-            alias=args.alias,
+            alias=alias,
             model=ident["model"],
         )
     except core.NotASource as exc:

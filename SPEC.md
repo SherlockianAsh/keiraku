@@ -22,6 +22,7 @@ A **source** is a plain directory. It has no server, no daemon, and no listening
 │   └── <vessel-id>/
 │       ├── <msg-id>.json
 │       ├── <msg-id>.claim
+│       ├── _unconfirmed/     # printed by a hook, not yet proven seen
 │       └── _read/
 └── state/                # shared state + leases (L4)
     ├── <slug>.<hash8>.json
@@ -152,6 +153,17 @@ Delivery is exactly-once per recipient, enforced by exclusive file creation:
    **`FileMode::CreateNew`** (.NET) — *fail if exists*
 3. On success: the reader owns the message. Read it, then move both files into `_read/`.
 4. On failure: another reader owns it. Skip.
+
+**Hook delivery is confirmed late.** A hook only prints a message; the host may never show that
+output to the model (a turn can die first). So a hook moves what it prints into `_unconfirmed/`,
+and into `_read/` only when a later event from the same vessel proves the turn ran (`Stop`, or a
+mid-turn event such as a tool call). If the next event is another prompt, the unconfirmed
+messages are printed again, marked as possibly shown before. A duplicate is acceptable; a loss is
+not. A reader that takes messages directly (the library call, the MCP inbox tool) confirms at once.
+
+**A stale `busy` reads as `unknown`.** A turn that dies never reports `idle`. When presence is read,
+a `busy` record whose heartbeat is past the stale threshold is reported as `unknown`. The file is
+not rewritten.
 
 > ⚠️ **Rename is not atomic under contention.** An earlier prototype claimed messages by renaming
 > and appeared to pass a concurrency test with one winner. Under genuinely simultaneous access the

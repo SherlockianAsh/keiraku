@@ -66,6 +66,17 @@ HOSTS = {
 }
 
 
+# Events that fire inside a turn, after the prompt was accepted. Seeing one
+# proves the previous injection ran. Their output is not injected by the hosts
+# that document them, so they confirm and read nothing.
+MID_TURN = {
+    "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest",
+    "PermissionDenied", "PreCompact", "Notification", "SubagentStop",
+}
+
+REDELIVERY_NOTE = "(may have been shown before: the turn that received it did not finish)"
+
+
 class UnknownHost(core.KeirakuError):
     """No adapter for this host. Add one to HOSTS — it is a dict entry."""
 
@@ -173,6 +184,8 @@ def render_messages(messages) -> str:
         # consoles default to cp1252, which mangles anything outside it.
         head = f"  - from {who}" + (f" - {summary}" if summary else "")
         lines.append(head)
+        if m.get("_redelivered"):
+            lines.append(f"      {REDELIVERY_NOTE}")
         body = (m.get("body") or "").strip()
         for bl in body.splitlines():
             lines.append(f"      {bl}")
@@ -234,14 +247,25 @@ def run(argv=None, stdin_text=None, env=None) -> tuple:
     if kind == "end":
         vessel.detach()
         return 0, ""
-    if kind in ("start", "idle"):
+    if kind == "idle":
+        # Stop: the turn ran to its end, so what it was shown was seen.
+        vessel.confirm_delivered()
+        vessel.heartbeat(status="idle")
+        return 0, ""
+    if kind == "start":
+        # No injection here, so no proof either: leave unconfirmed as it is.
         vessel.heartbeat(status="idle")
         return 0, ""
 
     vessel.heartbeat(status="busy")
+    if ident["event"] in MID_TURN:
+        vessel.confirm_delivered()
+        return 0, ""
     if args.quiet:
         return 0, ""
-    return 0, render_messages(vessel.read_stream())
+    # A prompt. Anything still unconfirmed was never proven seen: say it again.
+    again = [dict(m, _redelivered=True) for m in vessel.unconfirmed()]
+    return 0, render_messages(again + vessel.read_stream(confirm=False))
 
 
 def main(argv=None) -> int:  # pragma: no cover - thin wrapper

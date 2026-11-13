@@ -215,8 +215,13 @@ def read_presence(
             continue
         if exclude and rec["vessel_id"] == exclude:
             continue
-        if not include_stale and _parse(rec.get("heartbeat_at", "")) < cutoff:
+        stale = _parse(rec.get("heartbeat_at", "")) < cutoff
+        if stale and not include_stale:
             continue
+        if stale and rec.get("status") == "busy":
+            # A turn that died never ran Stop, so "busy" would stay forever.
+            # A view only: the file on disk is not touched.
+            rec = dict(rec, status="unknown")
         out.append(rec)
     return out
 
@@ -404,12 +409,18 @@ class Vessel:
         return [deliver(self.source, self.vessel_id, vid, body, summary)
                 for vid in self._resolve(to)]
 
-    def read_stream(self) -> list:
-        """Claim and return unread messages, oldest first."""
+    def read_stream(self, confirm: bool = True) -> list:
+        """Claim and return unread messages, oldest first.
+
+        confirm=True files them in _read/ at once (the reader is the caller and
+        has them in hand). confirm=False is for a hook that only PRINTS them:
+        the host may never show that output to the model (the turn can die), so
+        they wait in _unconfirmed/ until confirm_delivered() is called.
+        """
         inbox = self._inbox(self.vessel_id)
         if not inbox.is_dir():
             return []
-        read_dir = inbox / "_read"
+        read_dir = inbox / ("_read" if confirm else "_unconfirmed")
 
         out = []
         for msg_path in sorted(inbox.glob("*.json")):
@@ -430,6 +441,37 @@ class Vessel:
                 out.append(rec)
         return out
 
+    def unconfirmed(self) -> list:
+        """Messages printed to the host but not yet proven seen, oldest first."""
+        udir = self._inbox(self.vessel_id) / "_unconfirmed"
+        if not udir.is_dir():
+            return []
+        out = []
+        for f in sorted(udir.glob("*.json")):
+            rec = _read_json(f)
+            if rec:
+                out.append(rec)
+        return out
+
+    def confirm_delivered(self) -> int:
+        """A later event proved the turn ran: unconfirmed messages become read."""
+        inbox = self._inbox(self.vessel_id)
+        udir = inbox / "_unconfirmed"
+        if not udir.is_dir():
+            return 0
+        n = 0
+        read_dir = inbox / "_read"
+        for f in sorted(udir.glob("*.json")):
+            read_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                _replace(f, read_dir / f.name)
+                claim = f.with_suffix(".claim")
+                if claim.exists():
+                    _replace(claim, read_dir / claim.name)
+                n += 1
+            except OSError:
+                pass
+        return n
 
     # -- state (L4) -------------------------------------------------------
     def set_state(self, key: str, value) -> dict:
